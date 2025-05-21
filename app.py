@@ -14,7 +14,7 @@ import numpy as np
 from pymongo import MongoClient
 
 # MongoDB connection setup
-client = MongoClient("mongodb://localhost:27017/")
+client = pymongo.MongoClient("mongodb://localhost:27017/")
 db = client["customs_documents"]
 collection = db["extracted_data"]
 
