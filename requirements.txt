@@ -1,0 +1,10 @@
+streamlit
+pymongo
+pypdfium2
+easyocr
+pdfplumber
+Pillow
+docx2txt
+pandas
+openpyxl
+torch  
