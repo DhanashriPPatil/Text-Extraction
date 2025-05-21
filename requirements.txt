@@ -1,10 +1,9 @@
 streamlit
 pymongo
-pypdfium2
-easyocr
+pymupdf
 pdfplumber
-Pillow
+easyocr
+pillow
 docx2txt
+numpy
 pandas
-openpyxl
-torch  
