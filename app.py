@@ -1,98 +1,185 @@
-import streamlit as st
-from pymongo import MongoClient
-import pdfplumber
+import streamlit as st 
+import fitz
+import zipfile
+import tempfile
+import os
+import re
+import pandas as pd
+import io
 import easyocr
 from PIL import Image
+import pdfplumber
 import docx2txt
-import pandas as pd
-from io import BytesIO
-import pypdfium2 as pdfium
+import numpy as np
+from pymongo import MongoClient
 
-# MongoDB setup
+# MongoDB connection setup
 client = MongoClient("mongodb://localhost:27017/")
-db = client["documentDB"]
-collection = db["extracted_texts"]
+db = client["customs_documents"]
+collection = db["extracted_data"]
 
-# Initialize EasyOCR reader (English)
-reader = easyocr.Reader(['en'], gpu=False)
+# Helper functions
+def pdf_to_text_per_page(pdf_path):
+    doc = fitz.open(pdf_path)
+    page_texts = []
+    for page in doc:
+        text = page.get_text()
+        if not text.strip():
+            pix = page.get_pixmap()
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            text = pytesseract.image_to_string(img)
+        page_texts.append(text)
+    doc.close()
+    return page_texts
 
-# === PDF via image conversion ===
-def convert_pdf_to_images(file_bytes, scale=300/72):
-    pdf_file = pdfium.PdfDocument(BytesIO(file_bytes))
-    page_indices = list(range(len(pdf_file)))
+def extract_tables(pdf_path):
+    tables = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for i, page in enumerate(pdf.pages):
+            page_tables = page.extract_tables()
+            for table in page_tables:
+                df = pd.DataFrame(table)
+                tables.append((i+1, df))
+    return tables
 
-    renderer = pdf_file.render(
-        pdfium.PdfBitmap.to_pil,
-        page_indices=page_indices,
-        scale=scale,
-    )
+def extract_images(pdf_path):
+    images = []
+    doc = fitz.open(pdf_path)
+    for i, page in enumerate(doc):
+        img_list = page.get_images(full=True)
+        for img_index, img in enumerate(img_list):
+            xref = img[0]
+            base_image = doc.extract_image(xref)
+            image_bytes = base_image["image"]
+            image_ext = base_image["ext"]
+            images.append({
+                "page": i+1,
+                "image": image_bytes,
+                "extension": image_ext,
+                "name": f"page_{i+1}_img_{img_index+1}.{image_ext}"
+            })
+    doc.close()
+    return images
 
-    list_final_images = []
-    for i, image in zip(page_indices, renderer):
-        image_byte_array = BytesIO()
-        image.save(image_byte_array, format='jpeg', optimize=True)
-        list_final_images.append({i: image_byte_array.getvalue()})
+def extract_fields(text):
+    # A generic extraction for demonstration (can be customized per project)
+    fields = {
+        "Emails": re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}", text),
+        "Phone Numbers": re.findall(r"\+?\d[\d\s()-]{7,}\d", text)
+    }
+    return fields
 
-    return list_final_images
-
-def extract_text_with_easyocr(list_dict_final_images):
-    image_list = [list(data.values())[0] for data in list_dict_final_images]
-    image_content = []
-
-    for index, image_bytes in enumerate(image_list):
-        image = Image.open(BytesIO(image_bytes))
-        result = reader.readtext(image, detail=0, paragraph=True)
-        page_text = "\n".join(result)
-        image_content.append(f"--- Page {index + 1} ---\n{page_text.strip()}\n")
-
-    return "\n".join(image_content)
-
-# === Other file types ===
-def extract_text_from_image(file):
-    image = Image.open(file)
-    result = reader.readtext(image, detail=0, paragraph=True)
-    return "\n".join(result)
+def extract_text_from_txt(file):
+    return file.read().decode("utf-8")
 
 def extract_text_from_docx(file):
-    return docx2txt.process(file).strip()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
+        tmp.write(file.read())
+        tmp_path = tmp.name
+    return docx2txt.process(tmp_path)
 
-def extract_text_from_excel(file):
-    df = pd.read_excel(file)
-    return df.to_string(index=False)
+reader = easyocr.Reader(['en'])
+def extract_text_from_image(file):
+    try:
+        image = Image.open(file)
+        image_np = np.array(image)
+        result = reader.readtext(image_np)
+        text = " ".join([text[1] for text in result])
+        return text 
+    except Exception as e:
+        print(f"Error during OCR: {e}")
+        return None
 
-# === Streamlit Interface ===
-st.title("📄 Universal Document Text Extractor with EasyOCR & MongoDB Saver")
+# Streamlit UI
+st.title("📄 Document Extractor with MongoDB Storage")
 
-uploaded_file = st.file_uploader("Upload PDF, Image, Word, or Excel file", type=['pdf', 'png', 'jpg', 'jpeg', 'docx', 'xlsx'])
+uploaded_zip = st.file_uploader("Upload ZIP file containing PDF documents", type=["zip"])
+uploaded_files = st.file_uploader("Or upload individual files", type=["pdf", "txt", "docx", "png", "jpg", "jpeg"], accept_multiple_files=True)
 
-if uploaded_file:
-    file_type = uploaded_file.name.split('.')[-1].lower()
-    extracted_text = ""
+def process_pdf_file(file_bytes, file_name):
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
+            tmp_pdf.write(file_bytes)
+            tmp_pdf_path = tmp_pdf.name
 
-    if file_type == "pdf":
-        pdf_bytes = uploaded_file.read()
-        images = convert_pdf_to_images(pdf_bytes)
-        extracted_text = extract_text_with_easyocr(images)
+        page_texts = pdf_to_text_per_page(tmp_pdf_path)
 
-    elif file_type in ["png", "jpg", "jpeg"]:
-        extracted_text = extract_text_from_image(uploaded_file)
+        for i, text in enumerate(page_texts):
+            fields = extract_fields(text)
+            record = {
+                "File Name": file_name,
+                "Page Number": i + 1,
+                "Extracted Text": text,
+                "Extracted Fields": fields
+            }
+            collection.insert_one(record)
 
-    elif file_type == "docx":
-        extracted_text = extract_text_from_docx(uploaded_file)
+            st.subheader(f"{file_name} - Page {i+1}")
+            for k, v in fields.items():
+                st.write(f"**{k}**: {v}")
+            with st.expander("Show Text"):
+                st.text(text)
 
-    elif file_type == "xlsx":
-        extracted_text = extract_text_from_excel(uploaded_file)
+        tables = extract_tables(tmp_pdf_path)
+        if tables:
+            st.markdown("**📊 Extracted Tables:**")
+            for page_num, df in tables:
+                st.markdown(f"**Table from Page {page_num}**")
+                st.dataframe(df)
 
-    else:
-        st.error("❌ Unsupported file format.")
+        images = extract_images(tmp_pdf_path)
+        if images:
+            st.markdown("**🖼️ Extracted Images:**")
+            for img in images:
+                st.image(img["image"], caption=img["name"], use_column_width=True)
 
-    if extracted_text:
-        st.subheader("📝 Extracted Text")
-        st.text_area("Content", extracted_text, height=400)
+    except Exception as e:
+        st.warning(f"⚠️ Could not process {file_name}: {e}")
 
-        if st.button("💾 Save to MongoDB"):
-            collection.insert_one({
-                "filename": uploaded_file.name,
-                "content": extracted_text
-            })
-            st.success("✅ Text saved to MongoDB successfully!")
+# Handle uploaded files
+if uploaded_zip:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        zip_path = os.path.join(tmpdir, "uploaded.zip")
+        with open(zip_path, "wb") as f:
+            f.write(uploaded_zip.read())
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(tmpdir)
+        for root, _, files in os.walk(tmpdir):
+            for file_name in files:
+                if file_name.lower().endswith(".pdf"):
+                    full_path = os.path.join(root, file_name)
+                    with open(full_path, "rb") as pdf_file:
+                        process_pdf_file(pdf_file.read(), file_name)
+
+if uploaded_files:
+    for uploaded_file in uploaded_files:
+        file_name = uploaded_file.name.lower()
+        if file_name.endswith(".pdf"):
+            process_pdf_file(uploaded_file.read(), uploaded_file.name)
+        else:
+            if file_name.endswith(".txt"):
+                text = extract_text_from_txt(uploaded_file)
+            elif file_name.endswith(".docx"):
+                text = extract_text_from_docx(uploaded_file)
+            elif file_name.endswith((".png", ".jpg", ".jpeg")):
+                text = extract_text_from_image(uploaded_file)
+            else:
+                continue
+
+            fields = extract_fields(text)
+            record = {
+                "File Name": uploaded_file.name,
+                "Page Number": 1,
+                "Extracted Text": text,
+                "Extracted Fields": fields
+            }
+            collection.insert_one(record)
+
+            st.subheader(f"{uploaded_file.name}")
+            for k, v in fields.items():
+                st.write(f"**{k}**: {v}")
+            with st.expander("Show Text"):
+                st.text(text)
+
+elif not uploaded_zip and not uploaded_files:
+    st.info("Please upload a ZIP file or individual documents to get started.")
