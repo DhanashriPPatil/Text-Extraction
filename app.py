@@ -11,12 +11,6 @@ from PIL import Image
 import pdfplumber
 import docx2txt
 import numpy as np
-from pymongo import MongoClient
-
-# MongoDB connection setup
-client = pymongo.MongoClient("mongodb://localhost:27017/")
-db = client["customs_documents"]
-collection = db["extracted_data"]
 
 # Helper functions
 def pdf_to_text_per_page(pdf_path):
@@ -62,7 +56,6 @@ def extract_images(pdf_path):
     return images
 
 def extract_fields(text):
-    # A generic extraction for demonstration (can be customized per project)
     fields = {
         "Emails": re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}", text),
         "Phone Numbers": re.findall(r"\+?\d[\d\s()-]{7,}\d", text)
@@ -91,7 +84,7 @@ def extract_text_from_image(file):
         return None
 
 # Streamlit UI
-st.title("📄 Document Extractor with MongoDB Storage")
+st.title("📄 Document Extractor (No Database)")
 
 uploaded_zip = st.file_uploader("Upload ZIP file containing PDF documents", type=["zip"])
 uploaded_files = st.file_uploader("Or upload individual files", type=["pdf", "txt", "docx", "png", "jpg", "jpeg"], accept_multiple_files=True)
@@ -106,14 +99,6 @@ def process_pdf_file(file_bytes, file_name):
 
         for i, text in enumerate(page_texts):
             fields = extract_fields(text)
-            record = {
-                "File Name": file_name,
-                "Page Number": i + 1,
-                "Extracted Text": text,
-                "Extracted Fields": fields
-            }
-            collection.insert_one(record)
-
             st.subheader(f"{file_name} - Page {i+1}")
             for k, v in fields.items():
                 st.write(f"**{k}**: {v}")
@@ -167,14 +152,6 @@ if uploaded_files:
                 continue
 
             fields = extract_fields(text)
-            record = {
-                "File Name": uploaded_file.name,
-                "Page Number": 1,
-                "Extracted Text": text,
-                "Extracted Fields": fields
-            }
-            collection.insert_one(record)
-
             st.subheader(f"{uploaded_file.name}")
             for k, v in fields.items():
                 st.write(f"**{k}**: {v}")
