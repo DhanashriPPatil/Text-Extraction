@@ -1,9 +1,10 @@
 streamlit
-pymongo
-pymupdf
+PyMuPDF==1.22.3           
 pdfplumber
-easyocr
 pillow
+easyocr
+python-docx               
 docx2txt
 numpy
 pandas
+pytesseract
