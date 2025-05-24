@@ -1,10 +1,6 @@
 streamlit
-PyMuPDF==1.22.3           
-pdfplumber
-pillow
-easyocr
-python-docx               
-docx2txt
-numpy
+python-docx
 pandas
-pytesseract
+pillow
+openpyxl
+doctr[torch]
